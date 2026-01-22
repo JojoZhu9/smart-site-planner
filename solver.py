@@ -1,12 +1,10 @@
+# solver.py (100%覆盖 + 极致优化版)
 import pandas as pd
 import numpy as np
-from sklearn.cluster import MiniBatchKMeans
+from sklearn.neighbors import BallTree
+from scipy.optimize import minimize
 from config import *
 from utils import haversine_vectorized
-import sys
-
-# 增加递归深度限制，防止极端情况
-sys.setrecursionlimit(2000)
 
 
 class CoverageSolver:
@@ -14,7 +12,6 @@ class CoverageSolver:
         self.df = df.copy()
         self.df[COL_LNG] = self.df[COL_LNG].astype(float)
         self.df[COL_LAT] = self.df[COL_LAT].astype(float)
-
         self.final_centers = []
         self.shop_assignments = {}
 
@@ -26,272 +23,327 @@ class CoverageSolver:
             tier = '未知'
         return TIER_RADIUS_LIMIT.get(tier, DEFAULT_RADIUS_LIMIT), tier
 
+    def recalculate_geometry(self, shop_indices):
+        """
+        [优化] 计算最小覆盖圆，并增加微小缓冲确保覆盖
+        """
+        if not shop_indices:
+            return 0.0, 0.0, 0.1
+
+        subset = self.df.loc[shop_indices]
+        lats = subset[COL_LAT].values
+        lngs = subset[COL_LNG].values
+
+        # 1. 初始重心
+        init_lat = lats.mean()
+        init_lng = lngs.mean()
+
+        if len(shop_indices) <= 2:
+            dists = haversine_vectorized(init_lng, init_lat, lngs, lats)
+            return init_lat, init_lng, max(dists.max() + 0.001, 0.1)  # +1米缓冲
+
+        # 2. 优化目标
+        def objective_function(center_coord):
+            c_lat, c_lng = center_coord
+            dists = haversine_vectorized(c_lng, c_lat, lngs, lats)
+            return dists.max()
+
+        try:
+            # 限制迭代次数，平衡速度与精度
+            result = minimize(
+                objective_function,
+                x0=[init_lat, init_lng],
+                method='Nelder-Mead',
+                options={'maxiter': 50, 'xatol': 1e-3, 'fatol': 1e-3}
+            )
+            best_lat, best_lng = result.x
+        except:
+            best_lat, best_lng = init_lat, init_lng
+
+        # 3. [关键] 重新计算精确半径并加缓冲
+        # 优化器返回的 result.fun 可能是近似值，必须重新算
+        final_dists = haversine_vectorized(best_lng, best_lat, lngs, lats)
+        final_radius = final_dists.max() + 0.001  # 增加 1米 缓冲，防止精度误差导致覆盖判定失败
+
+        return best_lat, best_lng, max(final_radius, 0.1)
+
     def save_cluster(self, df_subset, city_name, city_tier, center_lat, center_lng, radius):
-        """辅助函数：保存一个簇为最终结果"""
         center_id = f"Auto_{len(self.final_centers) + 1}"
+        shop_indices = df_subset.index.tolist()
 
-        display_radius = max(radius, 0.1)
-
-        # 记录中心点
         self.final_centers.append({
             'center_id': center_id,
             'city': city_name,
             'city_tier': city_tier,
             'lat': center_lat,
             'lng': center_lng,
-            'radius': display_radius,
+            'radius': radius,
             'load': len(df_subset),
             'capacity_rate': len(df_subset) / MAX_CAPACITY,
-            # 虚拟站点的销量 = 辖区内店铺销量之和
-            'center_sales': df_subset[COL_SALES].sum() if COL_SALES in df_subset.columns else 0
+            'center_sales': df_subset[COL_SALES].sum() if COL_SALES in df_subset.columns else 0,
+            'shop_indices': shop_indices
         })
 
-        # 记录归属
-        # 计算每个点到中心的距离
-        if len(df_subset) > 0:
-            dists = haversine_vectorized(
-                center_lng, center_lat,
-                df_subset[COL_LNG].values, df_subset[COL_LAT].values
-            )
-            for idx, dist in zip(df_subset.index, dists):
-                self.shop_assignments[idx] = {
-                    'center_id': center_id,
-                    'distance': dist
-                }
-
-    def recursive_cluster(self, df_subset, radius_limit, city_name, city_tier, depth=0):
-        """
-        递归聚类 (带防死循环机制)
-        depth: 当前递归深度
-        """
-        n_points = len(df_subset)
-
-        # --- 0. 基础出口 ---
-        if n_points == 0:
-            return
-
-        # --- 1. 计算几何参数 ---
-        center_lat = df_subset[COL_LAT].mean()
-        center_lng = df_subset[COL_LNG].mean()
-
-        if n_points > 1:
-            dists = haversine_vectorized(
-                center_lng, center_lat,
-                df_subset[COL_LNG].values, df_subset[COL_LAT].values
-            )
-            current_radius = dists.max()
-        else:
-            current_radius = 0
-
-        # --- 2. 检查是否满足条件 ---
-        is_load_ok = (n_points <= MAX_CAPACITY)
-        is_radius_ok = (current_radius <= radius_limit)
-
-        # 安全刹车：如果递归太深(超过50层)，或者只剩很少的点，强制停止
-        if (is_load_ok and is_radius_ok) or n_points <= 1 or depth > 50:
-            self.save_cluster(df_subset, city_name, city_tier, center_lat, center_lng, current_radius)
-            return
-
-        # --- 3. 特殊情况处理：高密度重叠点 (The Stacked Points Problem) ---
-        # 如果半径非常小（说明点都在一起），但数量很多（超载）
-        # 这时候 K-Means 是分不开的，必须暴力切分
-        if current_radius < 0.05 and not is_load_ok:
-            # print(f"  [触发硬切分] {city_name} 发现 {n_points} 个重叠点，半径 {current_radius:.4f}km")
-
-            # 简单的逻辑：直接按列表顺序切成几块
-            # 这种切分不考虑地理位置（因为地理位置几乎一样），只为了满足负载限制
-            num_chunks = int(np.ceil(n_points / MAX_CAPACITY))
-
-            # 使用 numpy array_split 进行切分
-            chunks = np.array_split(df_subset, num_chunks)
-
-            for chunk in chunks:
-                # 递归调用，但深度+1
-                self.recursive_cluster(chunk, radius_limit, city_name, city_tier, depth + 1)
-            return
-
-        # --- 4. 正常情况：K-Means 空间分裂 ---
-        # 决定分裂数量
-        k_by_load = int(np.ceil(n_points / MAX_CAPACITY))
-        k = max(2, k_by_load)  # 至少切2份
-
-        # 如果是因为半径太大而分裂，尝试切多一点，让子区域半径迅速变小
-        if not is_radius_ok and k == 2:
-            k = 3
-
-        k = min(k, n_points)
-
-        try:
-            coords = df_subset[[COL_LAT, COL_LNG]].values
-            # n_init=3 减少随机性，batch_size 调大提高速度
-            kmeans = MiniBatchKMeans(n_clusters=k, random_state=42, batch_size=512, n_init=3)
-            labels = kmeans.fit_predict(coords)
-
-            df_subset = df_subset.copy()  # 避免 SettingWithCopyWarning
-            df_subset['label'] = labels
-
-            # 检查 K-Means 是否真的把点分开了
-            # 如果 K-Means 分裂失败（比如所有点都被分到 label 0），会导致死循环
-            unique_labels = df_subset['label'].unique()
-            if len(unique_labels) < 2:
-                # K-Means 失败（可能是数据分布极其特殊），转为硬切分
-                # 这里的逻辑同上面的“重叠点处理”
-                chunks = np.array_split(df_subset.drop(columns=['label']), k)
-                for chunk in chunks:
-                    self.recursive_cluster(chunk, radius_limit, city_name, city_tier, depth + 1)
-                return
-
-            # 正常递归
-            for label in unique_labels:
-                sub_df = df_subset[df_subset['label'] == label].drop(columns=['label'])
-                self.recursive_cluster(sub_df, radius_limit, city_name, city_tier, depth + 1)
-
-        except Exception as e:
-            # 万一 K-Means 报错，兜底保存当前状态，防止程序崩溃
-            print(f"K-Means Error in {city_name}: {e}")
-            self.save_cluster(df_subset, city_name, city_tier, center_lat, center_lng, current_radius)
-
     def process_city(self, city_name):
+        """
+        标准生成流程 (移除激进的半径压缩，保证初始覆盖)
+        """
         city_df = self.df[self.df[COL_CITY] == city_name].copy()
-        radius_limit, city_tier = self.get_radius_limit(city_df)
+        radius_limit_km, city_tier = self.get_radius_limit(city_df)
+        print(f"处理 {city_name} ({city_tier})...")
 
-        print(f"处理 {city_name} ({city_tier}): 约束 [负载<{MAX_CAPACITY}, 半径<{radius_limit}km]")
+        coords_rad = np.radians(city_df[[COL_LAT, COL_LNG]].values)
+        tree = BallTree(coords_rad, metric='haversine')
 
-        # 启动递归，深度从0开始
-        self.recursive_cluster(city_df, radius_limit, city_name, city_tier, depth=0)
+        processed_indices = set()
+        all_indices = city_df.index.to_numpy()
+
+        # 密度优先
+        density_counts = tree.query_radius(coords_rad, r=2.0 / 6371.0, count_only=True)
+        sorted_indices = np.argsort(-density_counts)
+
+        R = 6371.0
+        radius_limit_rad = radius_limit_km / R
+
+        # 禁区列表 (适度排斥)
+        forbidden_zones = []
+
+        for i in sorted_indices:
+            original_idx = all_indices[i]
+            if original_idx in processed_indices: continue
+
+            seed_lat = city_df.loc[original_idx, COL_LAT]
+            seed_lng = city_df.loc[original_idx, COL_LNG]
+
+            # 适度排斥：只检查非常近的距离 (0.5倍半径)
+            # 既减少重合，又不至于产生无法填充的缝隙
+            in_forbidden = False
+            for fz_lat, fz_lng, fz_radius in forbidden_zones:
+                dist = haversine_vectorized(fz_lng, fz_lat, seed_lng, seed_lat)
+                if dist < max(fz_radius * 0.5, 0.5):
+                    in_forbidden = True
+                    break
+            if in_forbidden: continue
+
+            seed_coord = coords_rad[i].reshape(1, -1)
+            k_query = min(len(city_df), MAX_CAPACITY * 3)
+            dist_rad, tree_indices = tree.query(seed_coord, k=k_query)
+            dist_rad, tree_indices = dist_rad[0], tree_indices[0]
+
+            cluster_indices = []
+            for d_rad, t_idx in zip(dist_rad, tree_indices):
+                real_idx = all_indices[t_idx]
+                if real_idx in processed_indices: continue
+                if d_rad > radius_limit_rad: break
+                cluster_indices.append(real_idx)
+                if len(cluster_indices) >= MAX_CAPACITY: break
+
+            if cluster_indices:
+                subset = city_df.loc[cluster_indices]
+                center_lat, center_lng, final_radius = self.recalculate_geometry(cluster_indices)
+
+                self.save_cluster(subset, city_name, city_tier, center_lat, center_lng, final_radius)
+                processed_indices.update(cluster_indices)
+                forbidden_zones.append((center_lat, center_lng, final_radius))
 
     def post_process_absorb(self):
-        print("正在处理包含关系...")
+        """吞噬优化"""
         centers = self.final_centers
         centers.sort(key=lambda x: x['radius'], reverse=True)
-
         active_indices = set(range(len(centers)))
         new_centers_list = []
 
         for i in range(len(centers)):
-            if i not in active_indices:
-                continue
-
+            if i not in active_indices: continue
             big = centers[i]
             merged_indices = []
 
             for j in range(len(centers)):
-                if i == j or j not in active_indices:
-                    continue
+                if i == j or j not in active_indices: continue
                 small = centers[j]
+                if big['city'] != small['city']: continue
 
-                if big['city'] != small['city']:
-                    continue
-
-                # 宽松判断包含关系
                 dist = haversine_vectorized(big['lng'], big['lat'], small['lng'], small['lat'])
-                if dist + small['radius'] > big['radius'] * 1.2:
-                    continue
+                if dist + small['radius'] > big['radius'] * 1.3: continue
 
                 if big['load'] + small['load'] <= MAX_CAPACITY:
-                    # --- 修正开始 ---
-                    # 1. 计算新的重心 (加权平均)
-                    total_load = big['load'] + small['load']
-                    new_lat = (big['lat'] * big['load'] + small['lat'] * small['load']) / total_load
-                    new_lng = (big['lng'] * big['load'] + small['lng'] * small['load']) / total_load
+                    combined = big['shop_indices'] + small['shop_indices']
+                    n_lat, n_lng, n_rad = self.recalculate_geometry(combined)
 
-                    # 2. 计算新重心到两个旧圆心的距离
-                    dist_to_big = haversine_vectorized(new_lng, new_lat, big['lng'], big['lat'])
-                    dist_to_small = haversine_vectorized(new_lng, new_lat, small['lng'], small['lat'])
+                    if n_rad <= big['radius'] * 1.15:  # 稍微放宽吞噬条件
+                        big['lat'], big['lng'], big['radius'] = n_lat, n_lng, n_rad
+                        big['load'] += small['load']
+                        big['capacity_rate'] = big['load'] / MAX_CAPACITY
+                        big['center_sales'] += small['center_sales']
+                        big['shop_indices'] = combined
+                        merged_indices.append(j)
 
-                    # 3. 严格计算新半径：必须能包住原来的两个圆
-                    new_radius = max(dist_to_big + big['radius'], dist_to_small + small['radius'])
-
-                    # 更新大圈数据
-                    big['lat'] = new_lat
-                    big['lng'] = new_lng
-                    big['radius'] = new_radius  # 更新半径！
-                    big['load'] = total_load
-                    big['capacity_rate'] = total_load / MAX_CAPACITY
-                    big['center_sales'] += small['center_sales']
-                    # --- 修正结束 ---
-
-                    merged_indices.append(j)
-
-            for idx in merged_indices:
-                active_indices.remove(idx)
-
-            if i in active_indices:
-                new_centers_list.append(big)
-
+            for idx in merged_indices: active_indices.remove(idx)
+            if i in active_indices: new_centers_list.append(big)
         self.final_centers = new_centers_list
 
     def post_process_merge_neighbors(self):
-        print("正在优化邻居站点...")
+        """优先合并重合度高的邻居"""
         centers = self.final_centers
         active_indices = set(range(len(centers)))
         new_centers_list = []
 
         for i in range(len(centers)):
-            if i not in active_indices:
-                continue
-
+            if i not in active_indices: continue
             current = centers[i]
             best_merge_idx = -1
-            min_dist = float('inf')
+            max_score = -99999.0
 
             tier = current.get('city_tier', '未知')
-            radius_limit = TIER_RADIUS_LIMIT.get(tier, DEFAULT_RADIUS_LIMIT)
+            limit = TIER_RADIUS_LIMIT.get(tier, DEFAULT_RADIUS_LIMIT)
 
             for j in range(len(centers)):
-                if i == j or j not in active_indices:
-                    continue
+                if i == j or j not in active_indices: continue
                 neighbor = centers[j]
+                if current['city'] != neighbor['city']: continue
+                if current['load'] + neighbor['load'] > MAX_CAPACITY: continue
 
-                if current['city'] != neighbor['city']:
-                    continue
-                if current['load'] + neighbor['load'] > MAX_CAPACITY:
-                    continue
-
-                # 距离
                 dist = haversine_vectorized(current['lng'], current['lat'], neighbor['lng'], neighbor['lat'])
 
-                # --- 修正开始：预计算合并后的几何属性 ---
-                # 1. 预估新重心
-                temp_total_load = current['load'] + neighbor['load']
-                temp_lat = (current['lat'] * current['load'] + neighbor['lat'] * neighbor['load']) / temp_total_load
-                temp_lng = (current['lng'] * current['load'] + neighbor['lng'] * neighbor['load']) / temp_total_load
+                # 快速初筛
+                if (current['radius'] + neighbor['radius'] + dist) / 2 > limit * 1.2: continue
 
-                # 2. 预估新半径 (严格包络)
-                d_to_curr = haversine_vectorized(temp_lng, temp_lat, current['lng'], current['lat'])
-                d_to_neigh = haversine_vectorized(temp_lng, temp_lat, neighbor['lng'], neighbor['lat'])
+                overlap = (current['radius'] + neighbor['radius']) - dist
+                score = overlap + 1000 if overlap > 0 else -dist
 
-                strict_new_radius = max(d_to_curr + current['radius'], d_to_neigh + neighbor['radius'])
+                if score > max_score:
+                    combined = current['shop_indices'] + neighbor['shop_indices']
+                    n_lat, n_lng, n_rad = self.recalculate_geometry(combined)
 
-                # 3. 检查半径是否超标 (给一点点宽容度，比如 1.05倍，防止因为几米误差导致无法合并)
-                if strict_new_radius > radius_limit * 1.05:
-                    continue
-
-                if dist < min_dist:
-                    min_dist = dist
-                    best_merge_idx = j
-                    # 暂存计算好的新属性，避免下面重复算
-                    best_merge_props = (temp_lat, temp_lng, strict_new_radius)
+                    if n_rad <= limit * 1.05:
+                        max_score = score
+                        best_merge_idx = j
+                        best_props = (n_lat, n_lng, n_rad, combined)
 
             if best_merge_idx != -1:
                 neighbor = centers[best_merge_idx]
-
-                # 取出暂存的属性
-                new_lat, new_lng, new_radius = best_merge_props
-
-                # 更新
-                current['lat'] = new_lat
-                current['lng'] = new_lng
-                current['radius'] = new_radius  # 使用严格半径
+                current['lat'], current['lng'], current['radius'] = best_props[0], best_props[1], best_props[2]
                 current['load'] += neighbor['load']
                 current['capacity_rate'] = current['load'] / MAX_CAPACITY
                 current['center_sales'] += neighbor['center_sales']
-
+                current['shop_indices'] = best_props[3]
                 active_indices.remove(best_merge_idx)
 
             new_centers_list.append(current)
+        self.final_centers = new_centers_list
+
+    def post_process_merge_small_sites(self):
+        """
+        [关键] 强制清理小站点
+        允许半径放宽到 1.1 倍，以减少点位数量
+        """
+        global best_props
+        print("清理低负载站点...")
+        centers = self.final_centers
+        centers.sort(key=lambda x: x['load'])  # 从小到大处理
+
+        active_indices = set(range(len(centers)))
+        new_centers_list = []
+
+        for i in range(len(centers)):
+            if i not in active_indices: continue
+            current = centers[i]
+
+            # 如果负载还行(>60%)，就不强制合并了
+            if current['capacity_rate'] > 0.6:
+                new_centers_list.append(current)
+                continue
+
+            best_idx = -1
+            min_dist = float('inf')
+            tier = current.get('city_tier', '未知')
+            limit = TIER_RADIUS_LIMIT.get(tier, DEFAULT_RADIUS_LIMIT) * 1.1  # 放宽限制
+
+            for j in range(len(centers)):
+                if i == j or j not in active_indices: continue
+                neighbor = centers[j]
+                if current['city'] != neighbor['city']: continue
+                if current['load'] + neighbor['load'] > MAX_CAPACITY: continue
+
+                dist = haversine_vectorized(current['lng'], current['lat'], neighbor['lng'], neighbor['lat'])
+                if dist > limit * 2:
+                    continue  # 太远不看
+
+                combined = current['shop_indices'] + neighbor['shop_indices']
+                n_lat, n_lng, n_rad = self.recalculate_geometry(combined)
+
+                if n_rad <= limit:
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_idx = j
+                        best_props = (n_lat, n_lng, n_rad, combined)
+
+            if best_idx != -1:
+                neighbor = centers[best_idx]
+                neighbor['lat'], neighbor['lng'], neighbor['radius'] = best_props[0], best_props[1], best_props[2]
+                neighbor['load'] += current['load']
+                neighbor['capacity_rate'] = neighbor['load'] / MAX_CAPACITY
+                neighbor['center_sales'] += current['center_sales']
+                neighbor['shop_indices'] = best_props[3]
+                # current 被合并了，不加入 new list
+            else:
+                new_centers_list.append(current)
 
         self.final_centers = new_centers_list
+
+    def post_process_ensure_coverage(self):
+        """
+        [兜底] 确保 100% 覆盖
+        扫描所有店铺，如果有漏网之鱼，强制塞给最近的站点
+        """
+        print("执行最终覆盖检查...")
+        covered_shops = set()
+        for c in self.final_centers:
+            covered_shops.update(c['shop_indices'])
+
+        all_shops = set(self.df.index)
+        orphans = list(all_shops - covered_shops)
+
+        if not orphans:
+            print("  ✅ 完美覆盖 (100%)")
+            return
+
+        print(f"  ⚠️ 发现 {len(orphans)} 个孤儿店铺，正在强制分配...")
+
+        # 建立站点索引
+        center_coords = np.radians([[c['lat'], c['lng']] for c in self.final_centers])
+        tree = BallTree(center_coords, metric='haversine')
+
+        for oid in orphans:
+            o_row = self.df.loc[oid]
+            o_coord = np.radians([[o_row[COL_LAT], o_row[COL_LNG]]])
+
+            # 找最近的站点
+            dist, ind = tree.query(o_coord, k=5)
+
+            assigned = False
+            # 优先给同城且未满的
+            for d, idx in zip(dist[0], ind[0]):
+                c = self.final_centers[idx]
+                if c['city'] == o_row[COL_CITY] and c['load'] < MAX_CAPACITY:
+                    c['shop_indices'].append(oid)
+                    c['load'] += 1
+                    assigned = True
+                    break
+
+            # 如果都满了，强制给最近的同城站点 (允许超载)
+            if not assigned:
+                for idx in ind[0]:
+                    c = self.final_centers[idx]
+                    if c['city'] == o_row[COL_CITY]:
+                        c['shop_indices'].append(oid)
+                        c['load'] += 1
+                        assigned = True
+                        break
+
+            # 极端情况：新建站点
+            if not assigned:
+                self.save_cluster(self.df.loc[[oid]], o_row[COL_CITY], '未知', o_row[COL_LAT], o_row[COL_LNG], 0.1)
 
     def solve(self):
         self.final_centers = []
@@ -302,45 +354,49 @@ class CoverageSolver:
         for city in cities:
             self.process_city(city)
 
-        # 2. 循环优化 (Iterative Optimization)
+        # 2. 循环优化
         print("开始循环优化...")
-        max_iterations = 5  # 最多跑5轮，防止死循环
-
-        for i in range(max_iterations):
-            # 记录优化前的站点数量
+        for i in range(5):
             count_before = len(self.final_centers)
-
-            # 第一步：吃甜甜圈
             self.post_process_absorb()
-
-            # 第二步：合并邻居
             self.post_process_merge_neighbors()
+            self.post_process_merge_small_sites()  # 每一轮都尝试清理小站点
 
-            # 记录优化后的站点数量
             count_after = len(self.final_centers)
+            print(f"轮次 {i + 1}: {count_before} -> {count_after}")
+            if count_after == count_before: break
 
-            print(f"优化轮次 {i + 1}: 站点数 {count_before} -> {count_after}")
+        # 3. [兜底] 确保覆盖
+        self.post_process_ensure_coverage()
 
-            # 如果这一轮没有减少任何站点，说明稳定了，可以提前退出
-            if count_after == count_before:
-                print("优化已收敛，停止迭代。")
-                break
+        # 4. 最终几何重算
+        for c in self.final_centers:
+            if c['load'] > 0:
+                n_lat, n_lng, n_rad = self.recalculate_geometry(c['shop_indices'])
+                c['lat'], c['lng'], c['radius'] = n_lat, n_lng, n_rad
+                c['center_sales'] = self.df.loc[c['shop_indices']][COL_SALES].sum()
 
-        # --- 整理并输出结果 ---
+        # 5. 输出
         centers_df = pd.DataFrame(self.final_centers)
+        for c in self.final_centers:
+            c_id = c['center_id']
+            subset = self.df.loc[c['shop_indices']]
+            dists = haversine_vectorized(c['lng'], c['lat'], subset[COL_LNG].values, subset[COL_LAT].values)
+            for idx, dist in zip(subset.index, dists):
+                self.shop_assignments[idx] = {'center_id': c_id, 'distance': dist}
 
-        # 回写结果
         result_df = self.df.copy()
         result_df['is_covered'] = False
         result_df['center_id'] = None
         result_df['distance_to_center'] = 0.0
 
         assignment_df = pd.DataFrame.from_dict(self.shop_assignments, orient='index')
-
         if not assignment_df.empty:
-            # 确保索引类型一致
             result_df.loc[assignment_df.index, 'center_id'] = assignment_df['center_id']
             result_df.loc[assignment_df.index, 'distance_to_center'] = assignment_df['distance']
             result_df.loc[assignment_df.index, 'is_covered'] = True
+
+        if 'shop_indices' in centers_df.columns:
+            centers_df = centers_df.drop(columns=['shop_indices'])
 
         return centers_df, result_df

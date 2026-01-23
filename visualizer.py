@@ -1,7 +1,5 @@
-# visualizer.py
 import streamlit as st
 import pandas as pd
-import numpy as np  # 需要引入numpy进行数值比较
 import folium
 from folium.plugins import FastMarkerCluster
 from streamlit_folium import st_folium
@@ -202,7 +200,7 @@ else:
 
         # --- 关键修改：只获取 last_object_clicked ---
         # 我们不需要 tooltip 文本了，直接要坐标
-        map_data = st_folium(m, width="100%", height=700, returned_objects=["last_object_clicked"])
+        map_data = st_folium(m, width=None, height=700, returned_objects=["last_object_clicked"])
 
     # --- 交互逻辑 (坐标匹配法) ---
     if map_data and map_data.get("last_object_clicked"):

@@ -1,24 +1,30 @@
-# 数据读取地址
-DATA_PATH = 'data.csv'
+# --- 文件路径 ---
+DATA_PATH = 'data_test.csv'  # 修改文件名
+OUTPUT_CENTERS = 'output_centers.csv'
+OUTPUT_DETAILS = 'output_details.csv'
 
-# 列名映射
-COL_SHOP_ID = '商家ID'
-COL_CITY = '城市名称'
-COL_LNG = '经度'
-COL_LAT = '纬度'
-COL_SALES = '30天销量'
-COL_CITY_TIER = '城市等级'
+# --- 列名映射 (根据新表头修改) ---
+COL_LNG = 'longitude'           # 经度
+COL_LAT = 'latitude'            # 纬度
+COL_CITY = 'poi_second_district_name'  # 城市/二级行政区 (例如: 北京市, 朝阳区等)
+# 注意: 你的数据里好像没有明确的 "销量" 列，如果有，请填写真实的列名
+# 如果没有销量数据，代码会自动处理(视为全1或忽略销量加权)
+COL_SALES = ''
+# --- 城市等级配置 (可选) ---
+# 如果你的数据里没有 city_tier 列，代码会默认使用 '未知' 等级
+# 你可以手动指定这一列，或者在代码里写死逻辑
+COL_CITY_TIER = 'city_tier'     # 数据中似乎没有这一列，保持默认即可
 
-# 核心约束
-MAX_CAPACITY = 120  # 绝对硬指标：单点最大负载
+# --- 算法参数 ---
+MAX_CAPACITY = 50              # 单个站点最大店铺数
+DEFAULT_RADIUS_LIMIT = 3.0      # 默认半径限制 (km)
 
-# 城市等级 -> 半径上限 (只看 Max，因为现在是切分逻辑)
+# 城市等级对应的半径限制 (km)
 TIER_RADIUS_LIMIT = {
-    '超大城市': 5.0,
-    '大城市':   4.5,
-    '中等城市': 4.0,
-    '小城市':  3.5,
-    '微型城市': 3.0,
+    '超大城市': 4.0,
+    '特大城市': 3.5,
+    '大城市': 3.0,
+    '中等城市': 2.5,
+    '小城市': 2.0,
+    '未知': 3.0  # 默认兜底
 }
-# 默认上限
-DEFAULT_RADIUS_LIMIT = 4.0

@@ -1,4 +1,3 @@
-# solver.py (100%覆盖 + 极致优化版)
 import pandas as pd
 import numpy as np
 from sklearn.neighbors import BallTree
@@ -10,8 +9,26 @@ from utils import haversine_vectorized
 class CoverageSolver:
     def __init__(self, df):
         self.df = df.copy()
+
+        # 1. 强制转换为数值类型，无法转换的变为 NaN (比如空字符串、"null"等)
+        self.df[COL_LNG] = pd.to_numeric(self.df[COL_LNG], errors='coerce')
+        self.df[COL_LAT] = pd.to_numeric(self.df[COL_LAT], errors='coerce')
+
+        # 2. 统计清洗前的数据量
+        initial_count = len(self.df)
+
+        # 3. 删除经度或纬度为空的行
+        self.df = self.df.dropna(subset=[COL_LNG, COL_LAT])
+
+        # 4. 打印警告
+        dropped_count = initial_count - len(self.df)
+        if dropped_count > 0:
+            print(f"⚠️ 警告: 发现并移除了 {dropped_count} 条经纬度无效的数据！")
+
+        # 5. 确保数据是浮点型
         self.df[COL_LNG] = self.df[COL_LNG].astype(float)
         self.df[COL_LAT] = self.df[COL_LAT].astype(float)
+
         self.final_centers = []
         self.shop_assignments = {}
 
@@ -40,13 +57,13 @@ class CoverageSolver:
 
         if len(shop_indices) <= 2:
             dists = haversine_vectorized(init_lng, init_lat, lngs, lats)
-            return init_lat, init_lng, max(dists.max() + 0.001, 0.1)  # +1米缓冲
+            return init_lat, init_lng, max(dists.max() + 0.001, 0.1)
 
         # 2. 优化目标
         def objective_function(center_coord):
             c_lat, c_lng = center_coord
-            dists = haversine_vectorized(c_lng, c_lat, lngs, lats)
-            return dists.max()
+            dists_vectorized = haversine_vectorized(c_lng, c_lat, lngs, lats)
+            return dists_vectorized.max()
 
         try:
             # 限制迭代次数，平衡速度与精度
@@ -93,7 +110,7 @@ class CoverageSolver:
         print(f"处理 {city_name} ({city_tier})...")
 
         coords_rad = np.radians(city_df[[COL_LAT, COL_LNG]].values)
-        tree = BallTree(coords_rad, metric='haversine')
+        tree = BallTree(coords_rad)
 
         processed_indices = set()
         all_indices = city_df.index.to_numpy()
@@ -154,17 +171,21 @@ class CoverageSolver:
         new_centers_list = []
 
         for i in range(len(centers)):
-            if i not in active_indices: continue
+            if i not in active_indices:
+                continue
             big = centers[i]
             merged_indices = []
 
             for j in range(len(centers)):
-                if i == j or j not in active_indices: continue
+                if i == j or j not in active_indices:
+                    continue
                 small = centers[j]
-                if big['city'] != small['city']: continue
+                if big['city'] != small['city']:
+                    continue
 
                 dist = haversine_vectorized(big['lng'], big['lat'], small['lng'], small['lat'])
-                if dist + small['radius'] > big['radius'] * 1.3: continue
+                if dist + small['radius'] > big['radius'] * 1.3:
+                    continue
 
                 if big['load'] + small['load'] <= MAX_CAPACITY:
                     combined = big['shop_indices'] + small['shop_indices']
@@ -218,15 +239,16 @@ class CoverageSolver:
                     if n_rad <= limit * 1.05:
                         max_score = score
                         best_merge_idx = j
-                        best_props = (n_lat, n_lng, n_rad, combined)
+                        best_props_combined = (n_lat, n_lng, n_rad, combined)
 
             if best_merge_idx != -1:
                 neighbor = centers[best_merge_idx]
-                current['lat'], current['lng'], current['radius'] = best_props[0], best_props[1], best_props[2]
+                current['lat'], current['lng'], current['radius'] = best_props_combined[0], best_props_combined[1], \
+                    best_props_combined[2]
                 current['load'] += neighbor['load']
                 current['capacity_rate'] = current['load'] / MAX_CAPACITY
                 current['center_sales'] += neighbor['center_sales']
-                current['shop_indices'] = best_props[3]
+                current['shop_indices'] = best_props_combined[3]
                 active_indices.remove(best_merge_idx)
 
             new_centers_list.append(current)
@@ -237,7 +259,6 @@ class CoverageSolver:
         [关键] 强制清理小站点
         允许半径放宽到 1.1 倍，以减少点位数量
         """
-        global best_props
         print("清理低负载站点...")
         centers = self.final_centers
         centers.sort(key=lambda x: x['load'])  # 从小到大处理
@@ -260,14 +281,17 @@ class CoverageSolver:
             limit = TIER_RADIUS_LIMIT.get(tier, DEFAULT_RADIUS_LIMIT) * 1.1  # 放宽限制
 
             for j in range(len(centers)):
-                if i == j or j not in active_indices: continue
+                if i == j or j not in active_indices:
+                    continue
                 neighbor = centers[j]
-                if current['city'] != neighbor['city']: continue
-                if current['load'] + neighbor['load'] > MAX_CAPACITY: continue
+                if current['city'] != neighbor['city']:
+                    continue
+                if current['load'] + neighbor['load'] > MAX_CAPACITY:
+                    continue
 
                 dist = haversine_vectorized(current['lng'], current['lat'], neighbor['lng'], neighbor['lat'])
                 if dist > limit * 2:
-                    continue  # 太远不看
+                    continue
 
                 combined = current['shop_indices'] + neighbor['shop_indices']
                 n_lat, n_lng, n_rad = self.recalculate_geometry(combined)
@@ -312,7 +336,7 @@ class CoverageSolver:
 
         # 建立站点索引
         center_coords = np.radians([[c['lat'], c['lng']] for c in self.final_centers])
-        tree = BallTree(center_coords, metric='haversine')
+        tree = BallTree(center_coords)
 
         for oid in orphans:
             o_row = self.df.loc[oid]
@@ -370,11 +394,19 @@ class CoverageSolver:
         self.post_process_ensure_coverage()
 
         # 4. 最终几何重算
+        # 4. 最终几何重算
         for c in self.final_centers:
             if c['load'] > 0:
                 n_lat, n_lng, n_rad = self.recalculate_geometry(c['shop_indices'])
                 c['lat'], c['lng'], c['radius'] = n_lat, n_lng, n_rad
-                c['center_sales'] = self.df.loc[c['shop_indices']][COL_SALES].sum()
+                c['capacity_rate'] = c['load'] / MAX_CAPACITY
+
+                # === 修复 Bug 的部分开始 ===
+                # 安全地计算销量：先检查列是否存在，且不是空字符串
+                if COL_SALES and COL_SALES in self.df.columns:
+                    c['center_sales'] = self.df.loc[c['shop_indices']][COL_SALES].sum()
+                else:
+                    c['center_sales'] = 0  # 如果没有销量数据，设为0
 
         # 5. 输出
         centers_df = pd.DataFrame(self.final_centers)

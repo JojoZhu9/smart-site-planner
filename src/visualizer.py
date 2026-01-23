@@ -17,8 +17,8 @@ if 'selected_center_id' not in st.session_state:
 @st.cache_data
 def load_data():
     try:
-        details = pd.read_csv('output_details.csv')
-        centers = pd.read_csv('output_centers.csv')
+        details = pd.read_csv(OUTPUT_DETAILS)
+        centers = pd.read_csv(OUTPUT_CENTERS)
         return details, centers
     except FileNotFoundError:
         return None, None

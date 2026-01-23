@@ -2,8 +2,8 @@ import pandas as pd
 import numpy as np
 from sklearn.neighbors import BallTree
 from scipy.optimize import minimize
-from config import *
-from utils import haversine_vectorized
+from src.config import *
+from src.utils import haversine_vectorized
 
 
 class CoverageSolver:

@@ -1,7 +1,7 @@
 # --- 文件路径 ---
-DATA_PATH = 'data_test.csv'  # 修改文件名
-OUTPUT_CENTERS = 'output_centers.csv'
-OUTPUT_DETAILS = 'output_details.csv'
+DATA_PATH = './data/data_test.csv'  # 修改文件名
+OUTPUT_CENTERS = './data/output_centers.csv'
+OUTPUT_DETAILS = './data/output_details.csv'
 
 # --- 列名映射 (根据新表头修改) ---
 COL_LNG = 'longitude'           # 经度

@@ -64,7 +64,7 @@ pip install -r requirements.txt
 ```
 
 ### 2. 准备数据
-将 `data_test.csv` 文件放在项目根目录。
+将 `data_test.csv` 文件放在新建目录（data）。
 
 ### 3. 运行算法
 ```bash

@@ -164,47 +164,54 @@ class CoverageSolver:
                 forbidden_zones.append((center_lat, center_lng, final_radius))
 
     def post_process_absorb(self):
-        """吞噬优化"""
+        """吞噬优化 - 严格版：严格遵守 Capacity 和 Radius"""
         centers = self.final_centers
         centers.sort(key=lambda x: x['radius'], reverse=True)
         active_indices = set(range(len(centers)))
         new_centers_list = []
 
         for i in range(len(centers)):
-            if i not in active_indices:
-                continue
+            if i not in active_indices: continue
             big = centers[i]
+
+            tier = big.get('city_tier', '未知')
+            limit = TIER_RADIUS_LIMIT.get(tier, DEFAULT_RADIUS_LIMIT)
+
             merged_indices = []
 
             for j in range(len(centers)):
-                if i == j or j not in active_indices:
-                    continue
+                if i == j or j not in active_indices: continue
                 small = centers[j]
-                if big['city'] != small['city']:
+                if big['city'] != small['city']: continue
+
+                # 1. 负载预检查
+                if big['load'] + small['load'] > MAX_CAPACITY:
                     continue
 
+                # 2. 距离预检查 (如果连几何距离都超了，就不用费劲算圆了)
                 dist = haversine_vectorized(big['lng'], big['lat'], small['lng'], small['lat'])
-                if dist + small['radius'] > big['radius'] * 1.3:
+                if dist + small['radius'] > limit:
                     continue
 
-                if big['load'] + small['load'] <= MAX_CAPACITY:
-                    combined = big['shop_indices'] + small['shop_indices']
-                    n_lat, n_lng, n_rad = self.recalculate_geometry(combined)
+                # 3. 几何试算
+                combined = big['shop_indices'] + small['shop_indices']
+                n_lat, n_lng, n_rad = self.recalculate_geometry(combined)
 
-                    if n_rad <= big['radius'] * 1.15:  # 稍微放宽吞噬条件
-                        big['lat'], big['lng'], big['radius'] = n_lat, n_lng, n_rad
-                        big['load'] += small['load']
-                        big['capacity_rate'] = big['load'] / MAX_CAPACITY
-                        big['center_sales'] += small['center_sales']
-                        big['shop_indices'] = combined
-                        merged_indices.append(j)
+                # 4. 严格判定
+                if n_rad <= limit:
+                    big['lat'], big['lng'], big['radius'] = n_lat, n_lng, n_rad
+                    big['load'] += small['load']
+                    big['capacity_rate'] = big['load'] / MAX_CAPACITY
+                    big['center_sales'] += small['center_sales']
+                    big['shop_indices'] = combined
+                    merged_indices.append(j)
 
             for idx in merged_indices: active_indices.remove(idx)
             if i in active_indices: new_centers_list.append(big)
         self.final_centers = new_centers_list
 
     def post_process_merge_neighbors(self):
-        """优先合并重合度高的邻居"""
+        """邻居合并 - 严格版"""
         centers = self.final_centers
         active_indices = set(range(len(centers)))
         new_centers_list = []
@@ -222,12 +229,14 @@ class CoverageSolver:
                 if i == j or j not in active_indices: continue
                 neighbor = centers[j]
                 if current['city'] != neighbor['city']: continue
+
+                # 1. 严格负载检查
                 if current['load'] + neighbor['load'] > MAX_CAPACITY: continue
 
                 dist = haversine_vectorized(current['lng'], current['lat'], neighbor['lng'], neighbor['lat'])
 
-                # 快速初筛
-                if (current['radius'] + neighbor['radius'] + dist) / 2 > limit * 1.2: continue
+                # 2. 快速初筛
+                if (current['radius'] + neighbor['radius'] + dist) / 2 > limit: continue
 
                 overlap = (current['radius'] + neighbor['radius']) - dist
                 score = overlap + 1000 if overlap > 0 else -dist
@@ -236,7 +245,8 @@ class CoverageSolver:
                     combined = current['shop_indices'] + neighbor['shop_indices']
                     n_lat, n_lng, n_rad = self.recalculate_geometry(combined)
 
-                    if n_rad <= limit * 1.05:
+                    # 3. 严格半径检查
+                    if n_rad <= limit:
                         max_score = score
                         best_merge_idx = j
                         best_props_combined = (n_lat, n_lng, n_rad, combined)
@@ -244,7 +254,7 @@ class CoverageSolver:
             if best_merge_idx != -1:
                 neighbor = centers[best_merge_idx]
                 current['lat'], current['lng'], current['radius'] = best_props_combined[0], best_props_combined[1], \
-                    best_props_combined[2]
+                best_props_combined[2]
                 current['load'] += neighbor['load']
                 current['capacity_rate'] = current['load'] / MAX_CAPACITY
                 current['center_sales'] += neighbor['center_sales']
@@ -255,13 +265,9 @@ class CoverageSolver:
         self.final_centers = new_centers_list
 
     def post_process_merge_small_sites(self):
-        """
-        [关键] 强制清理小站点
-        允许半径放宽到 1.1 倍，以减少点位数量
-        """
-        print("清理低负载站点...")
+        """清理小站点 - 严格版"""
         centers = self.final_centers
-        centers.sort(key=lambda x: x['load'])  # 从小到大处理
+        centers.sort(key=lambda x: x['load'])
 
         active_indices = set(range(len(centers)))
         new_centers_list = []
@@ -270,7 +276,7 @@ class CoverageSolver:
             if i not in active_indices: continue
             current = centers[i]
 
-            # 如果负载还行(>60%)，就不强制合并了
+            # 如果已经比较满了，就不强行合并了
             if current['capacity_rate'] > 0.6:
                 new_centers_list.append(current)
                 continue
@@ -278,24 +284,23 @@ class CoverageSolver:
             best_idx = -1
             min_dist = float('inf')
             tier = current.get('city_tier', '未知')
-            limit = TIER_RADIUS_LIMIT.get(tier, DEFAULT_RADIUS_LIMIT) * 1.1  # 放宽限制
+            limit = TIER_RADIUS_LIMIT.get(tier, DEFAULT_RADIUS_LIMIT)
 
             for j in range(len(centers)):
-                if i == j or j not in active_indices:
-                    continue
+                if i == j or j not in active_indices: continue
                 neighbor = centers[j]
-                if current['city'] != neighbor['city']:
-                    continue
-                if current['load'] + neighbor['load'] > MAX_CAPACITY:
-                    continue
+                if current['city'] != neighbor['city']: continue
+
+                # 1. 严格负载检查
+                if current['load'] + neighbor['load'] > MAX_CAPACITY: continue
 
                 dist = haversine_vectorized(current['lng'], current['lat'], neighbor['lng'], neighbor['lat'])
-                if dist > limit * 2:
-                    continue
+                if dist > limit: continue
 
                 combined = current['shop_indices'] + neighbor['shop_indices']
                 n_lat, n_lng, n_rad = self.recalculate_geometry(combined)
 
+                # 2. 严格半径检查
                 if n_rad <= limit:
                     if dist < min_dist:
                         min_dist = dist
@@ -309,7 +314,6 @@ class CoverageSolver:
                 neighbor['capacity_rate'] = neighbor['load'] / MAX_CAPACITY
                 neighbor['center_sales'] += current['center_sales']
                 neighbor['shop_indices'] = best_props[3]
-                # current 被合并了，不加入 new list
             else:
                 new_centers_list.append(current)
 
@@ -317,10 +321,10 @@ class CoverageSolver:
 
     def post_process_ensure_coverage(self):
         """
-        [兜底] 确保 100% 覆盖
-        扫描所有店铺，如果有漏网之鱼，强制塞给最近的站点
+        [兜底] 确保 100% 覆盖 - 严格双限制版
+        既不许超载，也不许超半径。如果现有站点无法接纳，则新建站点。
         """
-        print("执行最终覆盖检查...")
+        print("执行最终覆盖检查 (严格模式)...")
         covered_shops = set()
         for c in self.final_centers:
             covered_shops.update(c['shop_indices'])
@@ -332,7 +336,7 @@ class CoverageSolver:
             print("  ✅ 完美覆盖 (100%)")
             return
 
-        print(f"  ⚠️ 发现 {len(orphans)} 个孤儿店铺，正在强制分配...")
+        print(f"  ⚠️ 发现 {len(orphans)} 个孤儿店铺，正在尝试分配...")
 
         # 建立站点索引
         center_coords = np.radians([[c['lat'], c['lng']] for c in self.final_centers])
@@ -342,32 +346,42 @@ class CoverageSolver:
             o_row = self.df.loc[oid]
             o_coord = np.radians([[o_row[COL_LAT], o_row[COL_LNG]]])
 
-            # 找最近的站点
-            dist, ind = tree.query(o_coord, k=5)
+            # 获取该城市的半径限制
+            tier = self.get_radius_limit(self.df[self.df[COL_CITY] == o_row[COL_CITY]])[1]
+            limit = TIER_RADIUS_LIMIT.get(tier, DEFAULT_RADIUS_LIMIT)
+
+            # 找最近的 10 个站点作为候选
+            # 为什么是10个？因为最近的可能满了，或者塞进去会爆半径，多找几个备胎
+            dist_rad, ind = tree.query(o_coord, k=min(10, len(self.final_centers)))
 
             assigned = False
-            # 优先给同城且未满的
-            for d, idx in zip(dist[0], ind[0]):
+
+            for idx in ind[0]:
                 c = self.final_centers[idx]
-                if c['city'] == o_row[COL_CITY] and c['load'] < MAX_CAPACITY:
-                    c['shop_indices'].append(oid)
+
+                # 1. 基础检查：城市必须相同，且未满载
+                if c['city'] != o_row[COL_CITY]: continue
+                if c['load'] >= MAX_CAPACITY: continue
+
+                # 2. 模拟插入：假设把这个店放进去，算一下新半径是多少
+                # 注意：这里不能只看距离，因为加入一个点可能会改变圆心位置
+                temp_indices = c['shop_indices'] + [oid]
+                n_lat, n_lng, n_rad = self.recalculate_geometry(temp_indices)
+
+                # 3. 严格判定：如果新半径满足限制，则确认分配
+                if n_rad <= limit:
+                    c['lat'], c['lng'], c['radius'] = n_lat, n_lng, n_rad
+                    c['shop_indices'] = temp_indices
                     c['load'] += 1
+                    c['capacity_rate'] = c['load'] / MAX_CAPACITY
+                    if COL_SALES in self.df.columns:
+                        c['center_sales'] += o_row[COL_SALES]
                     assigned = True
-                    break
+                    break  # 成功分配，处理下一个孤儿
 
-            # 如果都满了，强制给最近的同城站点 (允许超载)
+            # 4. 如果所有候选站点都不行（要么满了，要么塞进去会超半径），必须新建站点
             if not assigned:
-                for idx in ind[0]:
-                    c = self.final_centers[idx]
-                    if c['city'] == o_row[COL_CITY]:
-                        c['shop_indices'].append(oid)
-                        c['load'] += 1
-                        assigned = True
-                        break
-
-            # 极端情况：新建站点
-            if not assigned:
-                self.save_cluster(self.df.loc[[oid]], o_row[COL_CITY], '未知', o_row[COL_LAT], o_row[COL_LNG], 0.1)
+                self.save_cluster(self.df.loc[[oid]], o_row[COL_CITY], tier, o_row[COL_LAT], o_row[COL_LNG], 0.1)
 
     def solve(self):
         self.final_centers = []
@@ -393,7 +407,6 @@ class CoverageSolver:
         # 3. [兜底] 确保覆盖
         self.post_process_ensure_coverage()
 
-        # 4. 最终几何重算
         # 4. 最终几何重算
         for c in self.final_centers:
             if c['load'] > 0:

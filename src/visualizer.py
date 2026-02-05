@@ -5,7 +5,6 @@ from folium.plugins import FastMarkerCluster
 from streamlit_folium import st_folium
 from config import *
 
-# 页面设置
 st.set_page_config(layout="wide", page_title="智能点位规划系统")
 st.title("🗺️ 智能点位规划可视化系统")
 

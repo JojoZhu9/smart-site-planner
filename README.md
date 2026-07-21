@@ -65,8 +65,8 @@ The solver uses spatial neighbor queries, greedy clustering, minimum-enclosing-c
 
 | File | Contents |
 | --- | --- |
-| `data/output_centers.csv` | Final site identifiers, district, coordinates, radius, load, capacity rate, and assigned-store indices |
-| `data/output_details.csv` | Per-store planning and assignment details for the visualizer |
+| `data/output_centers.csv` | Final site identifiers, district and tier, coordinates, radius, load, capacity rate, center sales, and source type |
+| `data/output_details.csv` | Per-store planning fields with assigned center identifiers, coverage status, and distance-to-center details for the visualizer |
 | `logs/solver_run.log` | Runtime log created by `main.py` |
 
 These files are generated locally and ignored by Git.

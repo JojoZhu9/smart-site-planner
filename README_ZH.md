@@ -50,8 +50,8 @@ streamlit run src/visualizer.py
 
 | 文件 | 内容 |
 | --- | --- |
-| `data/output_centers.csv` | 最终站点标识、行政区、坐标、半径、负载、容量率和门店索引 |
-| `data/output_details.csv` | 可视化所需的逐门店规划和分配信息 |
+| `data/output_centers.csv` | 最终站点标识、行政区和行政区等级、坐标、半径、负载、容量率、站点销售额和来源类型 |
+| `data/output_details.csv` | 可视化所需的逐门店规划字段，以及分配的站点标识、覆盖状态和到站点距离 |
 | `logs/solver_run.log` | `main.py` 生成的运行日志 |
 
 这些文件均为本地生成内容，已被 Git 忽略。`src/visualizer.py` 会读取两个 CSV 输出，按行政区筛选并在 Streamlit/Folium 中显示站点、覆盖圆与门店点。

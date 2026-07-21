@@ -1,8 +1,13 @@
-# 忽略所有 csv 文件
+.idea/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+data/output_*.csv
+logs/
+
+# Keep source data and generated artifacts out of commits.
 *.csv
-
-# 忽略所有 log 文件
 *.log
-
-# 忽略所有 json 文件
 *.json

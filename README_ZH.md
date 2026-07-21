@@ -1,99 +1,90 @@
-# 🗺️ 智能点位规划与可视化系统
+# Smart Site Planner
 
-[![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-可视化-red)](https://streamlit.io/)
+[English](README.md) | Simplified Chinese
 
-## 🌐 语言
-- [English](README.md)
-- [中文](README_ZH.md)
+Smart Site Planner 是一个 Python 与 Streamlit 项目，用 POI 坐标进行配送站点覆盖规划、输出站点分配结果，并在交互式地图中查看结果。
 
-## 📖 项目简介
-这是一个智能点位规划系统，基于POI数据自动生成最优的配送站点位置。系统确保100%覆盖率，同时最小化站点数量和重合度。
+本仓库反映协作式课程/项目工作。贡献时请保留已有团队和课程署名，不要将项目表述为单人作品。
 
-## ✨ 核心功能
+## 快速开始
 
-### 🧠 智能算法
-- **100%覆盖保证** - 每个店铺都被分配到站点
-- **最小覆盖圆优化** - 数学优化确保紧凑覆盖
-- **多阶段优化** - 吞噬、合并、清理操作
-
-### 🗺️ 交互式可视化
-- **零延迟交互** - 点击站点立即显示覆盖店铺
-- **重合度检测** - 红色虚线显示重合区域
-- **实时指标** - 覆盖率、负载率、重合率
-
-## 🖼️ 界面截图
-
-### 主界面
-![主界面](images/main_interface.png)
-*城市选择和站点可视化*
-
-### 站点覆盖
-![站点覆盖](images/site_coverage.png)
-*点击站点查看覆盖的店铺（绿色点）*
-
-
-## 📂 项目结构
-```
-SmartSite/                  
-├── data/                   
-│   ├── data_test.csv            # 输入数据
-│   ├── output_centers.csv       # 输出结果
-│   └── output_details.csv       # 输出结果
-├── images/
-│   ├── main_interface.png       # 主界面屏幕截图
-│   └── site_coverage.png        # 站点覆盖屏幕截图
-├── logs/
-│   └── amap_standardization.log # 日志文件
-├── src/                    
-│   ├── __init__.py              # 标识
-│   ├── config.py                # ⚙️ 配置文件
-│   ├── utils.py                 # 🛠️ 工具函数 
-│   ├── solver.py                # 🧠 核心算法 
-│   └── visualizer.py            # 📊 可视化逻辑
-├── main.py                      # 🚀 算法启动入口
-├── .gitignore                   # Git 忽略配置
-└── requirements.txt             # 依赖库列表
-```
-
-## 🚀 快速开始
-
-### 1. 安装依赖
 ```bash
-git clone https://github.com/yourusername/site-planning.git
-cd site-planning
+git clone https://github.com/JojoZhu9/smart-site-planner.git
+cd smart-site-planner
 pip install -r requirements.txt
 ```
 
-### 2. 准备数据
-将 `data_test.csv` 文件放在新建目录（data）。
+准备 `data/data.txt` 后运行：
 
-### 3. 运行算法
 ```bash
 python main.py
+streamlit run src/visualizer.py
 ```
-生成结果文件：
-- `output_centers.csv` - 站点位置
-- `output_details.csv` - 店铺分配
 
-### 4. 启动看板
+规划程序生成 `data/output_centers.csv` 与 `data/output_details.csv`；生成完成后再启动看板。
+
+## 数据格式与配置
+
+默认输入路径是 `data/data.txt`，定义在 `src/config.py`。程序先按制表符读取；若没有 `tbsg_latitude` 列，则按逗号分隔重试。请勿提交运营 POI 或位置数据。
+
+| 列名 | 含义 | 是否必需 |
+| --- | --- | --- |
+| `tbsg_longitude` | 门店经度 | 是 |
+| `tbsg_latitude` | 门店纬度 | 是 |
+| `second_district_name` | 用于拆分规划任务的城市或二级行政区 | 是 |
+
+无效经纬度会被丢弃。当前配置中 `COL_SALES` 与 `COL_CITY_TIER` 为空，因此默认不启用销售额和城市等级逻辑。
+
+在 [src/config.py](src/config.py) 中调整路径、列名和规划参数。默认值为：
+
+| 设置 | 默认值 | 作用 |
+| --- | --- | --- |
+| `DATA_PATH` | `./data/data.txt` | 输入数据 |
+| `MAX_CAPACITY` | `120` | 单个最终站点的最大门店数 |
+| `DEFAULT_RADIUS_LIMIT` | `3.0` km | 默认覆盖半径 |
+| `MERGE_DISTANCE_THRESHOLD` | `1.0` km | 候选站点融合阈值 |
+
+## 算法与输出
+
+`main.py` 会按非空行政区处理数据：先分别生成容量为 50 和 120 的候选站点，再以 `MERGE_DISTANCE_THRESHOLD` 融合候选点，最后以容量 120 进行优化。求解器使用空间邻域查询、贪心聚类、最小包围圆以及吸收、邻近合并、小站点合并和未覆盖门店分配等后处理。
+
+| 文件 | 内容 |
+| --- | --- |
+| `data/output_centers.csv` | 最终站点标识、行政区、坐标、半径、负载、容量率和门店索引 |
+| `data/output_details.csv` | 可视化所需的逐门店规划和分配信息 |
+| `logs/solver_run.log` | `main.py` 生成的运行日志 |
+
+这些文件均为本地生成内容，已被 Git 忽略。`src/visualizer.py` 会读取两个 CSV 输出，按行政区筛选并在 Streamlit/Folium 中显示站点、覆盖圆与门店点。
+
+## 截图
+
+### 主界面
+![主界面](images/main_interface.png)
+
+### 站点覆盖
+![站点覆盖](images/site_coverage.png)
+
+## 验证与限制
+
+可用的语法检查命令是：
+
 ```bash
-streamlit run src\visualizer.py
-```
-浏览器打开 `http://localhost:8501`
-
-## ⚙️ 配置
-修改 `config.py` 匹配你的数据：
-```python
-MAX_CAPACITY = 100           # 单个站点最大店铺数
-DEFAULT_RADIUS_LIMIT = 3.0   # 默认半径限制(km)
-COL_LNG = 'longitude'        # 经度列名
-COL_LAT = 'latitude'         # 纬度列名
-COL_CITY = 'poi_second_district_name'  # 城市列名
+python -m compileall main.py src test_main.py
 ```
 
-## 📊 算法流程
-1. **初始生成** - 从高密度区域创建站点
-2. **优化迭代** - 合并和清理站点（5轮）
-3. **覆盖检查** - 确保100%覆盖
-4. **最终计算** - 计算最优位置
+`test_main.py` 是用于比较融合阈值的实验运行器，不是 pytest 测试模块。仓库当前没有可被 pytest 收集的测试用例，因此 `python -m pytest test_main.py -q` 会因收集到零个测试而退出。这是仓库限制，不代表已有测试覆盖率。仓库也没有附带示例数据；只应使用已获授权、且符合上述格式的数据集。
+
+## 贡献与安全
+
+提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。敏感数据、凭据或依赖问题请按 [SECURITY.md](SECURITY.md) 私下报告，不要公开提交。
+
+## 项目结构
+
+```text
+smart-site-planner/
+├── images/                 # 已跟踪的看板截图
+├── src/                    # 配置、合并、求解、工具与可视化
+├── main.py                 # 批量规划入口
+├── test_main.py            # 阈值实验运行器
+└── requirements.txt        # Python 依赖
+```

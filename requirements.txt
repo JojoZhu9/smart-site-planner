@@ -4,3 +4,5 @@ streamlit
 folium
 streamlit-folium
 scikit-learn
+scipy
+tqdm

@@ -10,7 +10,7 @@ Do not commit API keys, tokens, passwords, connection strings, environment files
 
 ## Reporting a Vulnerability
 
-Please report suspected vulnerabilities privately to the repository maintainers rather than opening a public issue. Include a concise description, affected files or dependencies, reproduction steps that use non-sensitive data, impact, and any mitigation already taken. Do not attach private datasets, credentials, or production logs.
+Please report suspected vulnerabilities privately to the monitored project contact at `jiuzhou.zhu@ucdconnect.ie` rather than opening a public issue. Include a concise description, affected files or dependencies, reproduction steps that use non-sensitive data, impact, and any mitigation already taken. Do not attach private datasets, credentials, or production logs.
 
 ## Dependency Issues
 

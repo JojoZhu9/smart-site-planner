@@ -3,6 +3,8 @@
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-Visualization-red)](https://streamlit.io/)
 
+**License:** No license is granted for reuse, modification, or redistribution.
+
 English | [Simplified Chinese](README_ZH.md)
 
 Smart Site Planner is a Python and Streamlit system for planning delivery-site coverage from point-of-interest (POI) coordinates. It groups stores by district, proposes sites with capacity and radius constraints, writes site assignments, and visualizes the result on an interactive map.
